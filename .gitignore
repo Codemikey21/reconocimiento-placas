@@ -1,0 +1,24 @@
+# Python / backend
+venv/
+__pycache__/
+*.pyc
+.env
+
+# EasyOCR descarga sus pesos aquí en tiempo de ejecución, no hace falta versionarlos
+.EasyOCR/
+
+# Node / Expo
+node_modules/
+.expo/
+.expo-shared/
+dist/
+web-build/
+
+# Llaves y credenciales — NUNCA subir esto a GitHub
+*.pem
+*.key
+.aws/
+
+# Sistema
+.DS_Store
+Thumbs.db

@@ -53,21 +53,21 @@ El flujo completo, en palabras: la app toma una foto cada ~1 segundo mientras el
 
 ## 📁 Estructura del repositorio
 placas-reconocimiento/
-├── mobile/ # App Expo (React Native) para iPhone
-│ ├── App.js
-│ ├── config.js # URL del backend
-│ └── app.json
-├── backend/ # API FastAPI
-│ ├── app/
-│ │ ├── main.py
-│ │ ├── plate_pipeline.py
-│ │ └── models/best.pt # pesos del modelo YOLO entrenado
-│ ├── requirements.txt
-│ └── README.md # guía de despliegue en AWS EC2
-├── ml/ # Entrenamiento del modelo YOLO
-│ └── README.md # guía paso a paso (Colab + Roboflow)
+├── mobile/                    App Expo (React Native) para iPhone
+│   ├── App.js
+│   ├── config.js              URL del backend
+│   └── app.json
+├── backend/                   API FastAPI
+│   ├── app/
+│   │   ├── main.py
+│   │   ├── plate_pipeline.py
+│   │   └── models/best.pt     pesos del modelo YOLO entrenado
+│   ├── requirements.txt
+│   └── README.md              guía de despliegue en AWS EC2
+├── ml/                        Entrenamiento del modelo YOLO
+│   └── README.md              guía paso a paso (Colab + Roboflow)
 └── aws/
-└── README.md # guía de infraestructura AWS (EC2, Security Group, IP elástica)
+    └── README.md              guía de infraestructura AWS (EC2, Security Group, IP elástica)
 
 ---
 

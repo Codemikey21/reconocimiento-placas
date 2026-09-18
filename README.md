@@ -52,6 +52,7 @@ El flujo completo, en palabras: la app toma una foto cada ~1 segundo mientras el
 ---
 
 ## 📁 Estructura del repositorio
+```
 placas-reconocimiento/
 ├── mobile/                    App Expo (React Native) para iPhone
 │   ├── App.js
@@ -68,6 +69,7 @@ placas-reconocimiento/
 │   └── README.md              guía paso a paso (Colab + Roboflow)
 └── aws/
     └── README.md              guía de infraestructura AWS (EC2, Security Group, IP elástica)
+​```
 
 ---
 

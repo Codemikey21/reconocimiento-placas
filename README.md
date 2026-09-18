@@ -119,5 +119,5 @@ El modelo `best.pt` ya viene entrenado y listo en `backend/app/models/best.pt`. 
 
 ## 👤 Autor
 
-**Miguel Angel Solano Diaz** — Ingeniería de Software, UNAB
+**Miguel Angel Solano Diaz** — Ingeniería de Sistemas, UNAB
 Proyecto realizado para la materia de Ciencia de Datos.

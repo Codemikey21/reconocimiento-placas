@@ -18,6 +18,7 @@ import { CameraView, useCameraPermissions } from "expo-camera";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import * as Speech from "expo-speech";
+import * as FileSystem from "expo-file-system/legacy";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { API_BASE_URL as DEFAULT_API_URL } from "./config";
 
@@ -52,6 +53,20 @@ function speakPlate(plateText) {
   const spaced = plateText.split("").join(" ");
   Speech.stop();
   Speech.speak(`Placa detectada: ${spaced}`, {
+    language: SPEECH_LANGUAGE,
+    pitch: 1.0,
+    rate: 0.95,
+  });
+}
+
+// Anuncia una o varias placas nuevas en una sola locución (no corta la
+// anterior a mitad si llegan varias en el mismo escaneo).
+function speakPlates(plateTexts) {
+  if (!plateTexts || plateTexts.length === 0) return;
+  const spokenParts = plateTexts.map((p) => p.split("").join(" "));
+  const intro = plateTexts.length === 1 ? "Placa detectada" : `${plateTexts.length} placas detectadas`;
+  Speech.stop();
+  Speech.speak(`${intro}. ${spokenParts.join(". Siguiente placa. ")}`, {
     language: SPEECH_LANGUAGE,
     pitch: 1.0,
     rate: 0.95,
@@ -279,7 +294,7 @@ export default function App() {
   const cameraRef = useRef(null);
   const scanningRef = useRef(false);
   const apiUrlRef = useRef(DEFAULT_API_URL);
-  const lastPlateRef = useRef({ plate: null, time: 0 });
+  const lastPlateTimesRef = useRef({}); // { [placa]: timestampUltimoAnuncio }
   const resultTimeoutRef = useRef(null);
 
   const resultAnim = useRef(new Animated.Value(0)).current;
@@ -324,37 +339,50 @@ export default function App() {
     try {
       const photo = await cameraRef.current.takePictureAsync({ quality: 0.5, base64: false, skipProcessing: true });
 
-      const formData = new FormData();
-      formData.append("file", { uri: photo.uri, name: "plate.jpg", type: "image/jpeg" });
-
-      const response = await fetch(`${apiUrlRef.current}/recognize`, {
-        method: "POST",
-        body: formData,
-        headers: { "Content-Type": "multipart/form-data" },
+      // Usamos expo-file-system para subir el archivo en vez de armar un
+      // FormData a mano: en versiones recientes de Expo/React Native el
+      // FormData manual con { uri, name, type } falla con
+      // "Unsupported FormDataPart implementation". uploadAsync hace el
+      // multipart/form-data de forma nativa, sin ese problema.
+      const uploadResult = await FileSystem.uploadAsync(`${apiUrlRef.current}/recognize`, photo.uri, {
+        httpMethod: "POST",
+        uploadType: FileSystem.FileSystemUploadType.MULTIPART,
+        fieldName: "file",
+        mimeType: "image/jpeg",
       });
 
-      if (!response.ok) throw new Error(`Servidor respondió ${response.status}`);
-      const data = await response.json();
+      if (uploadResult.status < 200 || uploadResult.status >= 300) {
+        throw new Error(`Servidor respondió ${uploadResult.status}`);
+      }
+      const data = JSON.parse(uploadResult.body);
 
-      if (data.success) {
+      if (data.success && Array.isArray(data.plates) && data.plates.length > 0) {
         const now = Date.now();
-        const isSamePlateRecently =
-          lastPlateRef.current.plate === data.plate_text &&
-          now - lastPlateRef.current.time < SAME_PLATE_COOLDOWN_MS;
+        // Solo anunciamos/guardamos las placas que no se hayan leído hace
+        // poco (cada placa tiene su propio cooldown independiente, así que
+        // si hay dos carros en el cuadro, ambas se anuncian).
+        const newPlates = data.plates.filter((p) => {
+          const lastTime = lastPlateTimesRef.current[p.plate_text] || 0;
+          return now - lastTime > SAME_PLATE_COOLDOWN_MS;
+        });
 
-        if (!isSamePlateRecently) {
-          lastPlateRef.current = { plate: data.plate_text, time: now };
+        if (newPlates.length > 0) {
+          newPlates.forEach((p) => {
+            lastPlateTimesRef.current[p.plate_text] = now;
+          });
+
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-          speakPlate(data.plate_text);
+          speakPlates(newPlates.map((p) => p.plate_text));
 
-          const entry = {
-            id: now.toString(),
-            plate: data.plate_text,
-            confidence: data.confidence,
-            time: new Date().toLocaleTimeString(),
-          };
-          setHistory((prev) => [entry, ...prev].slice(0, 30));
-          setResult({ ok: true, ...data });
+          const nowLabel = new Date().toLocaleTimeString();
+          const entries = newPlates.map((p, i) => ({
+            id: `${now}-${i}`,
+            plate: p.plate_text,
+            confidence: p.confidence,
+            time: nowLabel,
+          }));
+          setHistory((prev) => [...entries, ...prev].slice(0, 30));
+          setResult({ ok: true, plates: data.plates, processing_time_ms: data.processing_time_ms });
           showResultCard(3500);
         }
       }
@@ -456,7 +484,13 @@ export default function App() {
   return (
     <View style={styles.container}>
       <StatusBar barStyle="light-content" />
-      <CameraView ref={cameraRef} style={StyleSheet.absoluteFill} facing="back" enableTorch={torchOn} />
+      <CameraView
+        ref={cameraRef}
+        style={StyleSheet.absoluteFill}
+        facing="back"
+        enableTorch={torchOn}
+        pictureSize="1280x720"
+      />
       <View style={styles.vignetteTop} pointerEvents="none" />
       <View style={styles.vignetteBottom} pointerEvents="none" />
 
@@ -559,34 +593,30 @@ export default function App() {
                   <Animated.View style={{ transform: [{ scale: checkAnim }] }}>
                     <Ionicons name="volume-high" size={16} color={COLORS.primary} />
                   </Animated.View>
-                  <Text style={styles.speakingPillText}>Leyendo en voz alta...</Text>
+                  <Text style={styles.speakingPillText}>
+                    {result.plates.length > 1 ? `${result.plates.length} placas detectadas` : "Leyendo en voz alta..."}
+                  </Text>
                 </View>
                 <TouchableOpacity style={styles.sheetCloseButton} onPress={hideResultCard}>
                   <Ionicons name="close" size={18} color={COLORS.textSecondary} />
                 </TouchableOpacity>
               </View>
 
-              <View style={styles.plateCard}>
-                <Text style={styles.plateText}>{result.plate_text}</Text>
-              </View>
-
-              <View style={styles.confidenceRow}>
-                <View style={{ flex: 1 }}>
-                  <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 6 }}>
-                    <Ionicons name="checkmark-circle" size={15} color={COLORS.primary} />
-                    <Text style={styles.confidenceLabel}>{(result.confidence * 100).toFixed(1)}% de precisión</Text>
+              {result.plates.slice(0, 3).map((p, idx) => (
+                <View key={`${p.plate_text}-${idx}`} style={[styles.plateCard, idx > 0 && { marginTop: 10 }]}>
+                  <Text style={styles.plateText}>{p.plate_text}</Text>
+                  <View style={{ width: "100%", marginTop: 10, paddingHorizontal: 4 }}>
+                    <ConfidenceBar value={p.confidence} />
+                    <Text style={styles.plateSubMeta}>
+                      {(p.confidence * 100).toFixed(1)}% · {p.method === "yolo" ? "Modelo propio" : p.method}
+                    </Text>
                   </View>
-                  <ConfidenceBar value={result.confidence} />
                 </View>
-              </View>
+              ))}
 
               <View style={styles.metaRow}>
                 <View style={styles.metaChip}>
-                  <Text style={styles.metaChipLabel}>Método</Text>
-                  <Text style={styles.metaChipValue}>{result.method === "yolo" ? "Modelo propio" : result.method}</Text>
-                </View>
-                <View style={styles.metaChip}>
-                  <Text style={styles.metaChipLabel}>Tiempo</Text>
+                  <Text style={styles.metaChipLabel}>Tiempo total</Text>
                   <Text style={styles.metaChipValue}>{result.processing_time_ms} ms</Text>
                 </View>
               </View>
@@ -951,6 +981,7 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   plateText: { color: "#0F172A", fontSize: 30, fontWeight: "800", letterSpacing: 3 },
+  plateSubMeta: { color: COLORS.textSecondary, fontSize: 11.5, marginTop: 6, textAlign: "center" },
   confidenceRow: { marginBottom: 14 },
   confidenceLabel: { color: "#0F172A", fontSize: 13.5, fontWeight: "700", marginLeft: 6 },
   confidenceTrack: { width: "100%", height: 6, borderRadius: 3, backgroundColor: COLORS.surfaceHigh, overflow: "hidden" },

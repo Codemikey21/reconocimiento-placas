@@ -1,4 +1,4 @@
-"""
+﻿"""
 main.py
 
 API FastAPI para el reconocimiento de placas vehiculares.
@@ -6,7 +6,7 @@ API FastAPI para el reconocimiento de placas vehiculares.
 Endpoints:
   GET  /health              -> chequeo de salud simple
   POST /recognize           -> recibe una imagen (multipart/form-data, campo "file")
-                                y devuelve el texto de la placa detectada
+                                y devuelve la(s) placa(s) detectada(s)
 
 Para correr localmente (pruebas antes de subir a AWS):
     uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
@@ -24,8 +24,8 @@ from app.plate_pipeline import get_recognizer
 
 app = FastAPI(
     title="API de Reconocimiento de Placas",
-    description="Recibe una foto tomada desde la app móvil y devuelve la placa detectada.",
-    version="1.0.0",
+    description="Recibe una foto tomada desde la app móvil y devuelve la(s) placa(s) detectada(s).",
+    version="1.1.0",
 )
 
 app.add_middleware(
@@ -39,6 +39,13 @@ app.add_middleware(
 MAX_FILE_SIZE_MB = 8
 
 
+class PlateInfo(BaseModel):
+    plate_text: str
+    raw_text: str
+    confidence: float
+    method: str
+
+
 class RecognizeResponse(BaseModel):
     success: bool
     plate_text: str | None = None
@@ -47,6 +54,7 @@ class RecognizeResponse(BaseModel):
     method: str = "none"
     processing_time_ms: int = 0
     candidates: list[str] = []
+    plates: list[PlateInfo] = []
 
 
 class HealthResponse(BaseModel):
@@ -91,4 +99,13 @@ async def recognize(file: UploadFile = File(...)):
         method=result.method,
         processing_time_ms=result.processing_time_ms,
         candidates=result.candidates,
+        plates=[
+            PlateInfo(
+                plate_text=p.plate_text,
+                raw_text=p.raw_text,
+                confidence=p.confidence,
+                method=p.method,
+            )
+            for p in result.plates
+        ],
     )

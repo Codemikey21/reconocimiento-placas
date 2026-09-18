@@ -1,18 +1,22 @@
-"""
+﻿"""
 plate_pipeline.py
 
 Pipeline de reconocimiento de placas vehiculares:
-  1. Localización de la placa en la imagen.
+  1. Localización de la placa (o placas) en la imagen.
      - Si existe un modelo YOLO propio entrenado (app/models/best.pt), se usa
        ese modelo (esta es la parte "modelo propio" de la actividad).
      - Si todavía no lo has entrenado/copiado, se usa un método de respaldo
        con OpenCV (bordes + contornos) para que puedas seguir probando el
        resto del sistema mientras entrenas el modelo.
-  2. Lectura de caracteres sobre la región localizada usando EasyOCR
+  2. Lectura de caracteres sobre cada región localizada usando EasyOCR
      (red neuronal ya entrenada, se usa solo para leer el texto, no para
-     localizar la placa).
+     localizar la placa). El alfabeto de lectura se restringe a A-Z0-9
+     (una placa no tiene tildes, ñ ni símbolos), lo que acelera bastante
+     el reconocimiento en CPU.
   3. Validación/limpieza del texto contra los formatos de placas colombianas
      (autos: 3 letras + 3 números; motos: 3 letras + 2 números + 1 letra).
+  4. Si la imagen tiene más de una placa (varios carros en el cuadro), se
+     detectan y leen todas, no solo la de mayor confianza.
 
 Este módulo se carga una sola vez al iniciar el servidor y expone la función
 `get_recognizer()` que usa main.py.
@@ -37,6 +41,15 @@ import numpy as np
 YOLO_MODEL_PATH = Path(__file__).parent / "models" / "best.pt"
 YOLO_CONFIDENCE_THRESHOLD = 0.35
 
+# Cuántas placas como máximo procesamos/devolvemos por foto (evita que una
+# imagen con muchos falsos positivos dispare demasiadas lecturas OCR).
+MAX_PLATES_PER_IMAGE = 4
+
+# Alfabeto permitido para la lectura OCR: solo letras y números, como en una
+# placa real. Restringir esto acelera bastante a EasyOCR en CPU porque reduce
+# el espacio de búsqueda de caracteres.
+OCR_ALLOWLIST = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
 # ---------------------------------------------------------------------------
 # Patrones de placas colombianas
 # ---------------------------------------------------------------------------
@@ -55,6 +68,14 @@ COMMON_OCR_FIXES = {
 
 
 @dataclass
+class PlateInfo:
+    plate_text: str
+    raw_text: str
+    confidence: float
+    method: str  # "yolo" | "contours" | "full_frame"
+
+
+@dataclass
 class PlateResult:
     success: bool
     plate_text: Optional[str] = None
@@ -63,6 +84,7 @@ class PlateResult:
     method: str = "none"  # "yolo" | "contours" | "full_frame" | "none"
     processing_time_ms: int = 0
     candidates: list = field(default_factory=list)
+    plates: list = field(default_factory=list)  # lista de PlateInfo, una por placa única detectada
 
 
 class PlateRecognizer:
@@ -87,8 +109,8 @@ class PlateRecognizer:
                   f"Usando localización por contornos (OpenCV) mientras entrenas tu modelo YOLO.")
 
     # -- localización con el modelo YOLO propio -----------------------------
-    def _locate_with_yolo(self, image: np.ndarray, max_candidates: int = 5):
-        results = self.yolo_model.predict(image, verbose=False)[0]
+    def _locate_with_yolo(self, image: np.ndarray, max_candidates: int = MAX_PLATES_PER_IMAGE):
+        results = self.yolo_model.predict(image, verbose=False, imgsz=640)[0]
         candidates = []
         if results.boxes is None:
             return candidates
@@ -116,7 +138,7 @@ class PlateRecognizer:
         return candidates
 
     # -- localización de respaldo con OpenCV (contornos) ---------------------
-    def _locate_with_contours(self, image: np.ndarray, max_candidates: int = 5):
+    def _locate_with_contours(self, image: np.ndarray, max_candidates: int = MAX_PLATES_PER_IMAGE):
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         gray = cv2.bilateralFilter(gray, 11, 17, 17)
         edges = cv2.Canny(gray, 30, 200)
@@ -182,7 +204,12 @@ class PlateRecognizer:
         return None
 
     def _ocr_crop(self, crop: np.ndarray):
-        results = self.reader.readtext(crop, detail=1, paragraph=False)
+        results = self.reader.readtext(
+            crop,
+            detail=1,
+            paragraph=False,
+            allowlist=OCR_ALLOWLIST,
+        )
         if not results:
             return None, 0.0, ""
         raw_text = "".join([r[1] for r in results])
@@ -224,17 +251,41 @@ class PlateRecognizer:
         if not candidates_found:
             return PlateResult(success=False, processing_time_ms=elapsed_ms, method="none")
 
-        candidates_found.sort(key=lambda t: t[1], reverse=True)
-        best_plate, best_conf, best_raw, best_method = candidates_found[0]
+        # Deduplicar por texto de placa: una misma placa puede aparecer en más
+        # de una caja si el detector solapa regiones. Nos quedamos con la
+        # lectura de mayor confianza para cada placa única, y devolvemos todas
+        # las placas distintas encontradas (no solo la mejor) para soportar
+        # varios vehículos en el mismo cuadro.
+        best_by_plate = {}
+        for plate, conf, raw, method in candidates_found:
+            if plate not in best_by_plate or conf > best_by_plate[plate][0]:
+                best_by_plate[plate] = (conf, raw, method)
+
+        plates_sorted = sorted(
+            best_by_plate.items(), key=lambda item: item[1][0], reverse=True
+        )[:MAX_PLATES_PER_IMAGE]
+
+        plates_list = [
+            PlateInfo(
+                plate_text=plate,
+                confidence=round(conf, 4),
+                raw_text=raw,
+                method=method,
+            )
+            for plate, (conf, raw, method) in plates_sorted
+        ]
+
+        best = plates_list[0]
 
         return PlateResult(
             success=True,
-            plate_text=best_plate,
-            raw_text=best_raw,
-            confidence=round(best_conf, 4),
-            method=best_method,
+            plate_text=best.plate_text,
+            raw_text=best.raw_text,
+            confidence=best.confidence,
+            method=best.method,
             processing_time_ms=elapsed_ms,
             candidates=[c[0] for c in candidates_found],
+            plates=plates_list,
         )
 
 
